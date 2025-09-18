@@ -1,5 +1,15 @@
-patches-own [
-  chemical             ;; amount of chemical on this patch
+turtles-own [
+  last-positions       ;; lista delle ultime posizioni per rilevare i loop
+  steps-without-progress ;; contatore per rilevare quando si è bloccati
+  has-left-nest?       ;; nuovo: traccia se la formica ha già lasciato il nido
+  has-dropped-breadcrumb? ;; traccia se ha già rilasciato il suo unico feromone casa
+  steps-since-nest ;; passi fatti da quando sono uscito dal nido
+  knows-food-location? ;; sa dove si trova il cibo
+  food-direction       ;; direzione generale dove si trova il cibo (0-360)
+  trips-to-food        ;; numero di viaggi completati verso il cibo
+  following-ant        ;; riferimento alla formica che sta seguendo
+]patches-own [
+  pheromone        ;; feromone per trovare la strada verso il cibo
   food                 ;; amount of food on this patch (0, 1, or 2)
   nest?                ;; true on nest patches, false elsewhere
   nest-scent           ;; number that is higher closer to the nest
@@ -15,8 +25,8 @@ to setup
   clear-all
   set-default-shape turtles "bug"
   setup-patches
-  setup-obstacle ;; setup single obstacle
-  ;; setup-maze ;; setup the maze
+  ;; setup-obstacle ;; setup single obstacle
+  setup-maze ;; setup the maze
   ;; finding nest center
   let nest-center-x (-0.8 * max-pxcor)
   let nest-center-y 0
@@ -25,6 +35,9 @@ to setup
   [ set size 2
     set color red
     setxy nest-center-x nest-center-y
+    set steps-since-nest 0
+    set has-left-nest? false  ;; inizializza la nuova variabile
+    set heading 90  ;; punta direttamente verso est (destra)
   ]
   reset-ticks
 end
@@ -45,8 +58,15 @@ to setup-obstacles
 end
 
 to setup-maze
+  create-obstacle (-35 / 2 - 10) (max-pycor / 2 + 4.75) 35 26
+  create-obstacle (- 35 / 2 - 10) (-1 * max-pycor / 2 - 4.75) 35 26
 
+  create-obstacle 5 0 20 5
+  create-obstacle 5 10 20 5
+  create-obstacle 5 -10 20 5
 
+  create-obstacle 12.5 (max-pycor / 2 + 10) 45 20
+  create-obstacle 12.5 (min-pycor / 2 + -10) 45 20
 end
 
 to setup-patches
@@ -78,13 +98,13 @@ to recolor-patch  ;; patch procedure
   ifelse nest?
   [ set pcolor violet ]
   [ ifelse food > 0
-    [ if food-source-number = 1 [ set pcolor cyan ]
-      if food-source-number = 2 [ set pcolor sky  ]
-      if food-source-number = 3 [ set pcolor blue ] ]
-    ;; scale color to show chemical concentration
+    [ set pcolor cyan ]  ;; colore per la fonte di cibo
     [ ifelse obstacle?
       [ set pcolor yellow ]
-      [ set pcolor scale-color green chemical 0.1 5 ] ] ]
+      [ ;; visualizza il singolo feromone
+        ifelse pheromone > 0.1
+        [ set pcolor scale-color red pheromone 0.1 10 ]  ;; rosso per il feromone
+        [ set pcolor black ] ] ] ]  ;; nero se non c'è feromone
 end
 
 ;;;;;;;;;;;;;;;;;;;;;
@@ -94,43 +114,96 @@ end
 to go  ;; forever button
   ask turtles
   [ if who >= ticks [ stop ] ;; delay initial departure
+
+    ;; TUTTE le formiche rilasciano feromone mentre si muovono
+    if color = red [
+      ;; esplorazione: rilascio debole
+      set pheromone pheromone + 3
+    ]
+    if color != red [
+      ;; ritorno con cibo: rilascio forte
+      set pheromone pheromone + 20
+    ]
+
     ifelse color = red
     [ look-for-food  ]       ;; not carrying food? look for it
     [ return-to-nest ]       ;; carrying food? take it back to nest
-    wiggle
-    fd 1 ]
-  diffuse chemical (diffusion-rate / 100)
+
+    ;; movimento modificato: se nel nido e non ha ancora lasciato il nido, vai dritto verso destra
+    ifelse nest? and not has-left-nest?
+    [ move-straight-to-exit ]
+    [ wiggle ]  ;; comportamento normale solo fuori dal nido
+
+    fd 1
+    set steps-since-nest steps-since-nest + 1
+  ]
+  ;; diffusione del feromone
+  diffuse pheromone (diffusion-rate / 100)
   ask patches
-  [ set chemical chemical * (100 - evaporation-rate) / 100  ;; slowly evaporate chemical
+  [ ;; evaporazione del feromone
+    set pheromone pheromone * (100 - evaporation-rate) / 100
     recolor-patch ]
   tick
+end
+
+to move-straight-to-exit  ;; turtle procedure
+  ;; mantieni la direzione verso destra (est)
+  set heading 90
+
+  ;; controlla se il prossimo passo è verso un ostacolo
+  let target-patch patch-ahead 1
+  if target-patch != nobody and [obstacle?] of target-patch [
+    ;; se c'è un ostacolo direttamente davanti, prova ad aggirarlo
+    ;; prova prima leggermente a nord, poi a sud
+    ifelse [obstacle?] of patch-at 1 1 = false [
+      set heading 45  ;; nord-est
+    ] [
+      ifelse [obstacle?] of patch-at 1 -1 = false [
+        set heading 315  ;; sud-est
+      ] [
+        ;; se sia nord che sud sono bloccati, gira di 90 gradi
+        rt 90
+      ]
+    ]
+  ]
+
+  ;; segna che ha lasciato il nido quando non è più su una patch del nido
+  if not nest? [
+    set has-left-nest? true
+    set steps-since-nest 0   ;; reset quando esce dal nido
+  ]
 end
 
 to return-to-nest  ;; turtle procedure
   ifelse nest?
   [ ;; drop food and head out again
     set color red
+    set has-left-nest? false
+    set heading 90  ;; torna a puntare verso est
+    set steps-since-nest 0
     rt 180 ]
-  [ set chemical chemical + 60  ;; drop some chemical
-    uphill-nest-scent ]         ;; head toward the greatest value of nest-scent
+  [ ;; quando torna con il cibo, usa nest-scent per tornare al nido
+    uphill-nest-scent ]
 end
 
 to look-for-food  ;; turtle procedure
+  ;; segui il feromone se presente (verso concentrazioni crescenti = verso il cibo)
+  if pheromone >= 10
+  [ uphill-pheromone ]
+
   if food > 0
   [ set color orange + 1     ;; pick up food
     set food food - 1        ;; and reduce the food source
     rt 180                   ;; and turn around
     stop ]
-  ;; go in the direction where the chemical smell is strongest
-  if (chemical >= 0.05) and (chemical < 2)
-  [ uphill-chemical ]
 end
 
-;; sniff left and right, and go where the strongest smell is
-to uphill-chemical  ;; turtle procedure
-  let scent-ahead chemical-scent-at-angle   0
-  let scent-right chemical-scent-at-angle  45
-  let scent-left  chemical-scent-at-angle -45
+;; sniff left and right, and go where the strongest pheromone smell is
+to uphill-pheromone  ;; turtle procedure
+  let scent-ahead pheromone-scent-at-angle   0
+  let scent-right pheromone-scent-at-angle  45
+  let scent-left  pheromone-scent-at-angle -45
+
   if (scent-right > scent-ahead) or (scent-left > scent-ahead)
   [ ifelse scent-right > scent-left
     [ rt 45 ]
@@ -152,14 +225,21 @@ to wiggle  ;; turtle procedure
   rt random 40
   lt random 40
 
+  ;; controlla se il prossimo passo è verso un ostacolo
   let target-patch patch-ahead 1
   if target-patch != nobody and [obstacle?] of target-patch [
-    ; rotating around the obstacle with a gentle turn
-    ifelse random 2 = 0
-    [ rt 90 ]  ; gira a destra
-    [ lt 90 ]  ; gira a sinistra
+    ;; invece di girare di 90 gradi, trova una direzione libera
+    let attempts 0
+    while [target-patch != nobody and [obstacle?] of target-patch and attempts < 8] [
+      rt 45  ;; gira di 45 gradi alla volta
+      set target-patch patch-ahead 1
+      set attempts attempts + 1
+    ]
+    ;; se dopo 8 tentativi non trova una via libera, gira completamente
+    if attempts >= 8 [ rt 180 ]
   ]
 
+  ;; controlla sempre prima di muoversi
   if not can-move? 1 [ rt 180 ]
 end
 
@@ -169,10 +249,10 @@ to-report nest-scent-at-angle [angle]
   report [nest-scent] of p
 end
 
-to-report chemical-scent-at-angle [angle]
+to-report pheromone-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
   if p = nobody [ report 0 ]
-  report [chemical] of p
+  report [pheromone] of p
 end
 
 ;; function that generates square obstacles
@@ -187,6 +267,7 @@ to create-obstacle [center-x center-y size-x size-y]
     set pcolor yellow
   ]
 end
+
 ; Copyright 1997 Uri Wilensky.
 ; See Info tab for full copyright and license.
 @#$#@#$#@
@@ -243,7 +324,7 @@ diffusion-rate
 diffusion-rate
 0.0
 99.0
-60.0
+50.0
 1.0
 1
 NIL
@@ -258,7 +339,7 @@ evaporation-rate
 evaporation-rate
 0.0
 99.0
-15.0
+20.0
 1.0
 1
 NIL
@@ -290,7 +371,7 @@ population
 population
 0.0
 200.0
-75.0
+30.0
 1.0
 1
 NIL
