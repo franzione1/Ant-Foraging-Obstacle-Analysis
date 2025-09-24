@@ -1,20 +1,24 @@
 turtles-own [
-  last-positions       ;; lista delle ultime posizioni per rilevare i loop
-  steps-without-progress ;; contatore per rilevare quando si è bloccati
-  has-left-nest?       ;; nuovo: traccia se la formica ha già lasciato il nido
-  has-dropped-breadcrumb? ;; traccia se ha già rilasciato il suo unico feromone casa
-  steps-since-nest ;; passi fatti da quando sono uscito dal nido
-  knows-food-location? ;; sa dove si trova il cibo
-  food-direction       ;; direzione generale dove si trova il cibo (0-360)
-  trips-to-food        ;; numero di viaggi completati verso il cibo
-  following-ant        ;; riferimento alla formica che sta seguendo
+  has-left-nest?         ;; trace if the ant left the nest
+  steps-since-nest       ;; steps since it left the nest
+  steps-since-last-drop  ;; steps between two drops
+  pheromone-interval     ;; interval between drops
+  sensing-timer          ;; timer for following different pheromones
+  pheromone-home-counter
+  pheromone-food-counter
+
 ]patches-own [
-  pheromone        ;; feromone per trovare la strada verso il cibo
-  food                 ;; amount of food on this patch (0, 1, or 2)
+  pheromone-home
+  pheromone-food
+  pheromone-home-age
+  pheromone-food-age
+  food             ;; amount of food on this patch (0, 1, or 2)
+  food-source-number
   nest?                ;; true on nest patches, false elsewhere
   nest-scent           ;; number that is higher closer to the nest
-  food-source-number   ;; number (1, 2, or 3) to identify the food sources
+  food-scent           ;; number that is higher closer to the food
   obstacle?            ;; boolean to indicate if patch is an obstacle
+  trail
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;
@@ -25,10 +29,9 @@ to setup
   clear-all
   set-default-shape turtles "bug"
   setup-patches
-  ;; setup-obstacle ;; setup single obstacle
   setup-maze ;; setup the maze
-  ;; finding nest center
-  let nest-center-x (-0.8 * max-pxcor)
+
+  let nest-center-x (-0.8 * max-pxcor) ;; finding nest center
   let nest-center-y 0
 
   create-turtles population
@@ -36,8 +39,13 @@ to setup
     set color red
     setxy nest-center-x nest-center-y
     set steps-since-nest 0
-    set has-left-nest? false  ;; inizializza la nuova variabile
-    set heading 90  ;; punta direttamente verso est (destra)
+    set has-left-nest? false ;; initialise at false because they start in the nest
+    set heading 90
+    set pheromone-home-age 0
+    set pheromone-food-age 0
+    set pheromone-interval 8 + random 6 ;; random interval between 8 and 13
+    set pheromone-home-counter 0
+    set pheromone-food-counter 0
   ]
   reset-ticks
 end
@@ -58,15 +66,20 @@ to setup-obstacles
 end
 
 to setup-maze
-  create-obstacle (-35 / 2 - 10) (max-pycor / 2 + 4.75) 35 26
-  create-obstacle (- 35 / 2 - 10) (-1 * max-pycor / 2 - 4.75) 35 26
 
+  ;; setting the obstacles
   create-obstacle 5 0 20 5
   create-obstacle 5 10 20 5
   create-obstacle 5 -10 20 5
 
-  create-obstacle 12.5 (max-pycor / 2 + 10) 45 20
-  create-obstacle 12.5 (min-pycor / 2 + -10) 45 20
+  ;; setting up all the enviroment
+  create-obstacle (-35 / 2 - 10) (max-pycor / 2 + 4.75) 35 26
+  create-obstacle (- 35 / 2 - 10) (-1 * max-pycor / 2 - 4.75) 35 26
+  create-obstacle 12.5 (max-pycor / 2 + 10) 50 20
+  create-obstacle 12.5 (min-pycor / 2 + -10) 50 20
+
+  ;; setting up a wall
+  create-obstacle 12.5 5 5 20
 end
 
 to setup-patches
@@ -91,20 +104,29 @@ to setup-food  ;; patch procedure
   ;; set "food" at sources to either 1 or 2, randomly
   if food-source-number > 0
   [ set food one-of [1 2] ]
+  ;; set food scent
+  set food-scent 200 - distancexy(0.8 * max-pxcor) 0
 end
 
-to recolor-patch  ;; patch procedure
-  ;; give color to nest and food sources
-  ifelse nest?
-  [ set pcolor violet ]
-  [ ifelse food > 0
-    [ set pcolor cyan ]  ;; colore per la fonte di cibo
-    [ ifelse obstacle?
-      [ set pcolor yellow ]
-      [ ;; visualizza il singolo feromone
-        ifelse pheromone > 0.1
-        [ set pcolor scale-color red pheromone 0.1 10 ]  ;; rosso per il feromone
-        [ set pcolor black ] ] ] ]  ;; nero se non c'è feromone
+to recolor-patch
+  if nest? [ set pcolor violet stop ]
+  if food > 0 [ set pcolor cyan stop ]
+  if obstacle? [ set pcolor yellow stop ]
+  let age-factor 1
+  ;; if pheromone-home > 0.1 and pheromone-food > 0.1
+  ;; [ let display-intensity (pheromone-home + pheromone-food) * age-factor
+  ;;  set pcolor scale-color yellow display-intensity 0.1 15 ]
+  if pheromone-home > 0.1 [
+    let display-intensity pheromone-home * age-factor
+    set pcolor scale-color violet display-intensity 0.1 15
+    stop
+  ]
+  if pheromone-food > 0.1 [
+    let display-intensity pheromone-food * age-factor
+    set pcolor scale-color cyan display-intensity 0.1 15
+    stop
+  ]
+  set pcolor black
 end
 
 ;;;;;;;;;;;;;;;;;;;;;
@@ -115,133 +137,210 @@ to go  ;; forever button
   ask turtles
   [ if who >= ticks [ stop ] ;; delay initial departure
 
-    ;; TUTTE le formiche rilasciano feromone mentre si muovono
-    if color = red [
-      ;; esplorazione: rilascio debole
-      set pheromone pheromone + 3
-    ]
-    if color != red [
-      ;; ritorno con cibo: rilascio forte
-      set pheromone pheromone + 20
-    ]
+    ;; sensing timer update
+    set sensing-timer sensing-timer + 1
+    ;; all ants release pheromone
+    drop-pheromone
 
     ifelse color = red
     [ look-for-food  ]       ;; not carrying food? look for it
     [ return-to-nest ]       ;; carrying food? take it back to nest
 
-    ;; movimento modificato: se nel nido e non ha ancora lasciato il nido, vai dritto verso destra
+    ;; added movement when starting from nest
     ifelse nest? and not has-left-nest?
     [ move-straight-to-exit ]
     [ wiggle ]  ;; comportamento normale solo fuori dal nido
 
     fd 1
     set steps-since-nest steps-since-nest + 1
+    set steps-since-last-drop steps-since-last-drop + 1
   ]
-  ;; diffusione del feromone
-  diffuse pheromone (diffusion-rate / 100)
+
+  ask patches with [pheromone-home > 0] [
+    set pheromone-home-age pheromone-home-age + 1
+    ;; if it's too old remove it
+    if pheromone-home-age > pheromone-max-age [
+        set pheromone-home 0
+        set pheromone-home-age 0
+    ]
+  ]
+
+  ask patches with [pheromone-food > 0] [
+    set pheromone-food-age pheromone-food-age + 1
+    ;; if it's too old remove it
+    if pheromone-food-age > pheromone-max-age [
+        set pheromone-food 0
+        set pheromone-food-age 0
+    ]
+  ]
+
+  ;; pheromone diffusion
+  diffuse pheromone-food (diffusion-rate / 100)
+  diffuse pheromone-home (diffusion-rate / 100)
+
   ask patches
-  [ ;; evaporazione del feromone
-    set pheromone pheromone * (100 - evaporation-rate) / 100
-    recolor-patch ]
+  [ recolor-patch ]
   tick
 end
 
 to move-straight-to-exit  ;; turtle procedure
-  ;; mantieni la direzione verso destra (est)
+  ;; keep right way
   set heading 90
 
-  ;; controlla se il prossimo passo è verso un ostacolo
-  let target-patch patch-ahead 1
-  if target-patch != nobody and [obstacle?] of target-patch [
-    ;; se c'è un ostacolo direttamente davanti, prova ad aggirarlo
-    ;; prova prima leggermente a nord, poi a sud
-    ifelse [obstacle?] of patch-at 1 1 = false [
-      set heading 45  ;; nord-est
-    ] [
-      ifelse [obstacle?] of patch-at 1 -1 = false [
-        set heading 315  ;; sud-est
-      ] [
-        ;; se sia nord che sud sono bloccati, gira di 90 gradi
-        rt 90
-      ]
-    ]
-  ]
-
-  ;; segna che ha lasciato il nido quando non è più su una patch del nido
+  ;; left the nest
   if not nest? [
     set has-left-nest? true
-    set steps-since-nest 0   ;; reset quando esce dal nido
+    set steps-since-nest 0   ;; reset
+    set pheromone-food-counter 0
   ]
 end
 
-to return-to-nest  ;; turtle procedure
-  ifelse nest?
-  [ ;; drop food and head out again
-    set color red
-    set has-left-nest? false
-    set heading 90  ;; torna a puntare verso est
-    set steps-since-nest 0
-    rt 180 ]
-  [ ;; quando torna con il cibo, usa nest-scent per tornare al nido
-    uphill-nest-scent ]
+;; ADDED: function for control the drop of pheromone
+to drop-pheromone
+  ifelse color = red [
+    if steps-since-nest > 20 and steps-since-last-drop >= pheromone-interval and pheromone-home-counter < max-pheromone-drop [
+      set pheromone-home pheromone-home + 10
+      set pheromone-home-counter pheromone-home-counter + 1
+      set steps-since-last-drop 0
+    ]
+  ]
+  [
+    if steps-since-last-drop >= pheromone-interval and pheromone-food-counter < max-pheromone-drop [
+      set pheromone-food pheromone-food + 50
+      set pheromone-food-counter pheromone-food-counter + 1
+      set steps-since-last-drop 0
+    ]
+  ]
 end
 
-to look-for-food  ;; turtle procedure
-  ;; segui il feromone se presente (verso concentrazioni crescenti = verso il cibo)
-  if pheromone >= 10
-  [ uphill-pheromone ]
+;; adjusted with nest scent
+to return-to-nest  ;; turtle procedure
+  ifelse nest?
+  [
+    ;; drop food and head out again
+    set color red
+    set has-left-nest? false
+    set heading 90
+    set steps-since-nest 0
+    pen-up
+    rt 180 ]
+  [ ;; when coming back, look for the nest
+    pen-down
+    set pen-size 0.5
 
-  if food > 0
-  [ set color orange + 1     ;; pick up food
-    set food food - 1        ;; and reduce the food source
-    rt 180                   ;; and turn around
-    stop ]
+    let scent-ahead nest-scent-at-angle   0
+    let scent-right nest-scent-at-angle  45
+    let scent-left  nest-scent-at-angle -45
+
+    ;; threshold for smell
+    let threshold 140 ;; maximum is 200
+
+    ifelse (scent-ahead > threshold or scent-right > threshold or scent-left > threshold) [
+      if (scent-right > scent-ahead) or (scent-left > scent-ahead) [
+        ifelse scent-right > scent-left
+        [ rt 45 ]
+        [ lt 45 ]
+      ]
+    ]
+    [
+      if sensing-timer >= 5 and pheromone-home > 0.1 [
+      set sensing-timer 0
+      uphill-pheromone-home
+    ]]
+  ]
+end
+
+;; adjusted with food scent
+to look-for-food  ;; turtle procedure
+  ;; if on the food patch take it
+  if food > 0 [
+    set color orange + 1     ;; pick up food
+    set food food - 1        ;; reduce
+    rt 180                   ;; come back
+    set sensing-timer 0
+    set pheromone-home-counter 0
+    stop
+  ]
+
+  let scent-ahead food-scent-at-angle   0
+  let scent-right food-scent-at-angle  45
+  let scent-left  food-scent-at-angle -45
+
+  ;; threshold for smell really high
+  let threshold 190 ;; maximum is 200
+
+  ifelse (scent-ahead > threshold or scent-right > threshold or scent-left > threshold) [
+    if (scent-right > scent-ahead) or (scent-left > scent-ahead) [
+      ifelse scent-right > scent-left
+        [ rt 45 ]
+        [ lt 45 ]
+    ]
+  ]
+  [
+    if sensing-timer >= 50 [
+      ;; reset sensing timer
+      set sensing-timer 0
+      ;; if it's not near the food, try following food pheromone
+      uphill-pheromone-food
+    ]
+  ]
+end
+
+
+;; sniff left and right, and go where the strongest pheromone smell is
+to uphill-pheromone-home  ;; turtle procedure
+  let scent-ahead pheromone-home-scent-at-angle   0
+  let scent-right pheromone-home-scent-at-angle  45
+  let scent-left  pheromone-home-scent-at-angle -45
+
+  if (scent-right > scent-ahead) or (scent-left > scent-ahead)
+  [ ifelse scent-right > scent-left
+    [ rt 45 ]
+    [ lt 45 ]
+    ]
 end
 
 ;; sniff left and right, and go where the strongest pheromone smell is
-to uphill-pheromone  ;; turtle procedure
-  let scent-ahead pheromone-scent-at-angle   0
-  let scent-right pheromone-scent-at-angle  45
-  let scent-left  pheromone-scent-at-angle -45
+to uphill-pheromone-food  ;; turtle procedure
+  let scent-ahead pheromone-food-scent-at-angle   0
+  let scent-right pheromone-food-scent-at-angle  45
+  let scent-left  pheromone-food-scent-at-angle -45
 
   if (scent-right > scent-ahead) or (scent-left > scent-ahead)
   [ ifelse scent-right > scent-left
     [ rt 45 ]
-    [ lt 45 ] ]
+    [ lt 45 ]
+    ]
 end
 
-;; sniff left and right, and go where the strongest smell is
-to uphill-nest-scent  ;; turtle procedure
-  let scent-ahead nest-scent-at-angle   0
-  let scent-right nest-scent-at-angle  45
-  let scent-left  nest-scent-at-angle -45
-  if (scent-right > scent-ahead) or (scent-left > scent-ahead)
-  [ ifelse scent-right > scent-left
-    [ rt 45 ]
-    [ lt 45 ] ]
-end
+to wiggle
 
-to wiggle  ;; turtle procedure
-  rt random 40
-  lt random 40
-
-  ;; controlla se il prossimo passo è verso un ostacolo
   let target-patch patch-ahead 1
-  if target-patch != nobody and [obstacle?] of target-patch [
-    ;; invece di girare di 90 gradi, trova una direzione libera
+  ifelse target-patch != nobody [
+    if [obstacle?] of target-patch [
     let attempts 0
     while [target-patch != nobody and [obstacle?] of target-patch and attempts < 8] [
-      rt 45  ;; gira di 45 gradi alla volta
+        ifelse random 100 < 50
+        [rt 45]
+        [lt 45]
       set target-patch patch-ahead 1
       set attempts attempts + 1
     ]
-    ;; se dopo 8 tentativi non trova una via libera, gira completamente
     if attempts >= 8 [ rt 180 ]
   ]
+  ]
+  [
+    rt random 180
+  ]
+  if target-patch != nobody and not [obstacle?] of target-patch [
+    if random 100 < 50 [
+    rt random 15
+    lt random 15
+    ]
+  ]
 
-  ;; controlla sempre prima di muoversi
-  if not can-move? 1 [ rt 180 ]
 end
+
 
 to-report nest-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
@@ -249,10 +348,22 @@ to-report nest-scent-at-angle [angle]
   report [nest-scent] of p
 end
 
-to-report pheromone-scent-at-angle [angle]
+to-report food-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
   if p = nobody [ report 0 ]
-  report [pheromone] of p
+  report [food-scent] of p
+end
+
+to-report pheromone-home-scent-at-angle [angle]
+  let p patch-right-and-ahead angle 1
+  if p = nobody [ report 0 ]
+  report [pheromone-home] of p
+end
+
+to-report pheromone-food-scent-at-angle [angle]
+  let p patch-right-and-ahead angle 1
+  if p = nobody [ report 0 ]
+  report [pheromone-food] of p
 end
 
 ;; function that generates square obstacles
@@ -324,22 +435,7 @@ diffusion-rate
 diffusion-rate
 0.0
 99.0
-50.0
-1.0
-1
-NIL
-HORIZONTAL
-
-SLIDER
-31
-141
-221
-174
-evaporation-rate
-evaporation-rate
-0.0
-99.0
-20.0
+5.0
 1.0
 1
 NIL
@@ -371,31 +467,41 @@ population
 population
 0.0
 200.0
-30.0
+15.0
 1.0
 1
 NIL
 HORIZONTAL
 
-PLOT
-787
-16
-1485
-519
-Food in the pile
-time
-food
-0.0
-50.0
-0.0
-120.0
-true
-false
-"" ""
-PENS
-"food-in-pile1" 1.0 0 -11221820 true "" "plotxy ticks sum [food] of patches with [pcolor = cyan]"
-"food-in-pile2" 1.0 0 -13791810 true "" "plotxy ticks sum [food] of patches with [pcolor = sky]"
-"food-in-pile3" 1.0 0 -13345367 true "" "plotxy ticks sum [food] of patches with [pcolor = blue]"
+SLIDER
+31
+142
+203
+175
+pheromone-max-age
+pheromone-max-age
+2000
+4000
+3000.0
+100
+1
+NIL
+HORIZONTAL
+
+SLIDER
+31
+177
+203
+210
+max-pheromone-drop
+max-pheromone-drop
+1
+10
+5.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
