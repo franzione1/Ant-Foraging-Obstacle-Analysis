@@ -102,7 +102,7 @@ to setup-food  ;; patch procedure
   if (distancexy (0.8 * max-pxcor) 10) < 5
   [ set food-source-number 1 ]
 
-  if (distancexy (0.8 * max-pxcor) -10) < 5
+   if (distancexy (0.8 * max-pxcor) -10) < 5
   [ set food-source-number 2 ]
 
    if food-source-number > 0
@@ -110,16 +110,24 @@ to setup-food  ;; patch procedure
 
   ;; set food scent for all patches
   ;; scent of the nearest one
+
   let dist1 distancexy (0.8 * max-pxcor) 10
   let dist2 distancexy (0.8 * max-pxcor) -10
   set food-scent 200 - min (list dist1 dist2)
+
 end
 
 to recolor-patch
   if nest? [ set pcolor violet stop ]
   if food > 0
-    [ if food-source-number = 1 [ set pcolor cyan stop ]
-      if food-source-number = 2 [ set pcolor green stop ]]
+    [ if food-source-number = 1
+      [
+        set pcolor cyan stop
+      ]
+      if food-source-number = 2
+      [
+        set pcolor green stop
+  ]]
   if obstacle? [ set pcolor yellow stop ]
   let age-factor 1
   ;; if pheromone-home > 0.1 and pheromone-food > 0.1
@@ -130,14 +138,9 @@ to recolor-patch
     set pcolor scale-color violet display-intensity 0.1 15
     stop
   ]
-  if pheromone-food > 0.1 and food-source-number = 1[
+  if pheromone-food > 0.1 [
     let display-intensity pheromone-food * age-factor
     set pcolor scale-color cyan display-intensity 0.1 15
-    stop
-  ]
-  if pheromone-food > 0.1 and food-source-number = 2[
-    let display-intensity pheromone-food * age-factor
-    set pcolor scale-color green display-intensity 0.1 15
     stop
   ]
   set pcolor black
@@ -220,7 +223,7 @@ to drop-pheromone
   ]
   [
     if steps-since-last-drop >= pheromone-interval and pheromone-food-counter < max-pheromone-drop [
-      set pheromone-food pheromone-food + 50
+      set pheromone-food pheromone-food + 10
       set pheromone-food-counter pheromone-food-counter + 1
       set steps-since-last-drop 0
     ]
@@ -238,7 +241,6 @@ to return-to-nest  ;; turtle procedure
     set steps-since-nest 0
     pen-up
     set pheromone-food-counter pheromone-food-counter - 1
-    drop-pheromone
     set pheromone-food-counter 0
     rt 180 ]
   [ ;; when coming back, look for the nest
@@ -270,13 +272,21 @@ end
 ;; adjusted with food scent
 to look-for-food  ;; turtle procedure
   ;; if on the food patch take it
-  if food > 0 [
-    set color orange + 1     ;; pick up food
+  if food > 0 and food-source-number = 1[
+    set color cyan + 1     ;; pick up food
     set food food - 1        ;; reduce
     rt 180                   ;; come back
     set sensing-timer 0
     set pheromone-home-counter pheromone-home-counter - 1
-    drop-pheromone
+    set pheromone-home-counter 0
+    stop
+  ]
+  if food > 0 and food-source-number = 2[
+    set color green + 1     ;; pick up food
+    set food food - 1        ;; reduce
+    rt 180                   ;; come back
+    set sensing-timer 0
+    set pheromone-home-counter pheromone-home-counter - 1
     set pheromone-home-counter 0
     stop
   ]
